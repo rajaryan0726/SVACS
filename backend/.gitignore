@@ -1,0 +1,6 @@
+
+# Environment files (contain API keys)
+.env
+
+# Dataset images
+backend/dataset/

@@ -1,0 +1,48 @@
+# ============================================================
+# SVACS Backend — Production requirements for Render Free tier
+# CPU-only PyTorch wheels keep the install under ~400 MB disk.
+# ============================================================
+
+# ── Web framework ─────────────────────────────────────────────
+fastapi==0.110.0
+uvicorn==0.29.0
+starlette==0.36.3
+python-multipart==0.0.9
+python-dotenv==1.0.1
+pydantic==2.11.7
+pydantic-settings==2.2.1
+
+# ── PyTorch — CPU-ONLY build (removes CUDA overhead, ~700 MB → ~300 MB) ──
+# IMPORTANT: the extra-index-url must come first so pip resolves +cpu variants.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
+# torchaudio removed — not used anywhere in the application.
+
+# ── Computer vision ───────────────────────────────────────────
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+pillow==10.4.0
+# pillow-heif removed — HEIF images not required; saves a heavy native lib.
+
+# ── ML / Detection ────────────────────────────────────────────
+ultralytics==8.2.70
+easyocr==1.7.1
+python-bidi==0.4.2
+
+# ── Utilities ─────────────────────────────────────────────────
+pandas==2.2.2        # used internally by ultralytics
+requests==2.32.3
+PyYAML==6.0.2
+tqdm==4.66.5
+psutil==6.0.0
+
+# ── Gemini Vision API (Indian Navy vessel identification) ─────
+google-generativeai>=0.8.0
+
+# Removed packages (not imported anywhere in app code):
+#   scipy==1.13.1        — saves ~50 MB RSS
+#   scikit-image==0.24.0 — saves ~30 MB RSS
+#   shapely==2.0.5       — saves ~10 MB RSS
+#   torchaudio==2.3.1    — saves ~200 MB install
+#   pillow-heif==0.18.0  — saves a native lib

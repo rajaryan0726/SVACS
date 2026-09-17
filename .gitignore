@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+backend/.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Node
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+dist/
+
+# YOLO training outputs
+backend/runs/
+
+# Dataset images — never commit, re-download with scrape_wikimedia.py
+backend/dataset/
+
+# Environment files (contain API keys — NEVER commit)
+.env
+backend/.env
+
+# Model and data directories
+data/
+models/identity/
+reports/
