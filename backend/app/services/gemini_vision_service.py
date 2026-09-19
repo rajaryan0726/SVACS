@@ -8,6 +8,8 @@ import json
 import logging
 import base64
 import threading
+import concurrent.futures
+import requests
 from typing import Optional
 
 import cv2
@@ -144,45 +146,57 @@ class GeminiVisionService:
 
             logger.info("Sending image to Gemini (%d KB)...", len(image_bytes) // 1024)
 
-            # Implement retry logic for 503/429 errors
-            max_retries = 3
-            retry_delay = 2
+            # Enforce strict timeout and fallback using ThreadPoolExecutor
+            response = None
+            gemini_failed = False
             
-            for attempt in range(max_retries):
-                try:
-                    response = self._client.models.generate_content(
-                        model=settings.GEMINI_MODEL,
-                        contents=[
-                            types.Content(
-                                parts=[
-                                    types.Part.from_text(text=prompt),
-                                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                                ]
-                            )
-                        ],
-                        config=types.GenerateContentConfig(
-                            temperature=0.1,
-                            max_output_tokens=1024,
-                        ),
-                    )
-                    break # Success
-                except Exception as api_exc:
-                    err_msg = str(api_exc)
-                    if "503" in err_msg or "429" in err_msg:
-                        if attempt < max_retries - 1:
-                            logger.warning(
-                                f"Gemini API returned {err_msg[:50]} (Attempt {attempt+1}/{max_retries}). "
-                                f"Retrying in {retry_delay} seconds..."
-                            )
-                            import time
-                            time.sleep(retry_delay)
-                            retry_delay *= 2
-                            continue
-                    raise # Re-raise if not 503/429 or max retries exceeded
-
-            if not response or not response.text:
-                logger.warning("Gemini returned empty response")
+            def _call_gemini():
+                # Internal retry logic just for transient Google errors
+                max_retries = 3
+                retry_delay = 2
+                for attempt in range(max_retries):
+                    try:
+                        return self._client.models.generate_content(
+                            model=settings.GEMINI_MODEL,
+                            contents=[
+                                types.Content(
+                                    parts=[
+                                        types.Part.from_text(text=prompt),
+                                        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                                    ]
+                                )
+                            ],
+                            config=types.GenerateContentConfig(
+                                temperature=0.1,
+                                max_output_tokens=1024,
+                            ),
+                        )
+                    except Exception as api_exc:
+                        err_msg = str(api_exc)
+                        if "503" in err_msg or "429" in err_msg:
+                            if attempt < max_retries - 1:
+                                logger.warning(f"Gemini API returned {err_msg[:50]} (Attempt {attempt+1}/{max_retries}). Retrying in {retry_delay} seconds...")
+                                import time
+                                time.sleep(retry_delay)
+                                retry_delay *= 2
+                                continue
+                        raise
                 return None
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_call_gemini)
+                    response = future.result(timeout=settings.GEMINI_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                logger.error(f"Gemini API timed out after {settings.GEMINI_TIMEOUT} seconds.")
+                gemini_failed = True
+            except Exception as e:
+                logger.error("Gemini API call failed completely: %s", e)
+                gemini_failed = True
+                
+            if gemini_failed or not response or not response.text:
+                logger.warning("Gemini failed or returned empty. Executing OpenRouter Fallback...")
+                return self._analyze_with_openrouter(image_bytes, prompt)
 
             raw_text = response.text.strip()
 
@@ -213,6 +227,85 @@ class GeminiVisionService:
     def analyze_full_image(self, image: np.ndarray) -> Optional[dict]:
         """Analyze the full image for all vessels."""
         return self.analyze_vessel(image)
+
+    def _analyze_with_openrouter(self, image_bytes: bytes, prompt: str) -> Optional[dict]:
+        """Fallback to OpenRouter API (Free Model) if Gemini fails."""
+        if not settings.OPENROUTER_API_KEY:
+            logger.error("OpenRouter API key not configured. Fallback failed.")
+            return None
+        
+        fallback_models = [
+            "google/gemma-4-31b-it:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "openrouter/free"
+        ]
+        
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        image_url = f"data:image/jpeg;base64,{base64_image}"
+        
+        headers = {
+            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "SVACS",
+            "Content-Type": "application/json"
+        }
+        
+        for model_name in fallback_models:
+            logger.info("Initiating OpenRouter fallback (Model: %s)...", model_name)
+            
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_url
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "temperature": 0.1
+            }
+            
+            try:
+                resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=20)
+                if resp.status_code != 200:
+                    logger.warning("OpenRouter model %s failed: %s %s", model_name, resp.status_code, resp.text[:100])
+                    continue
+                    
+                data = resp.json()
+                raw_text = data["choices"][0]["message"]["content"].strip()
+                
+                # Clean markdown
+                if raw_text.startswith("```"):
+                    lines = raw_text.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    raw_text = "\n".join(lines)
+                
+                result = json.loads(raw_text)
+                logger.info("OpenRouter Fallback OK (Model: %s) — detected=%s type=%s", model_name, result.get("vessel_detected"), result.get("vessel_type"))
+                return result
+            except json.JSONDecodeError:
+                logger.warning("OpenRouter model %s returned invalid JSON.", model_name)
+                continue
+            except Exception as e:
+                logger.warning("OpenRouter model %s request failed: %s", model_name, e)
+                continue
+                
+        logger.error("All OpenRouter fallback models failed.")
+        return None
 
 
 # Module-level singleton
