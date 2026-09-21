@@ -102,6 +102,9 @@ class VesselDetectionItem(BaseModel):
     label: str = "Unknown"              # EfficientNet label
     confidence: float = 0.0             # EfficientNet confidence
     top_predictions: List[TopPrediction] = []
+    
+    # LLM Telemetry
+    llm_provider: Optional[str] = None
 
 class EnhancedAnalysisResponse(BaseModel):
     """Enhanced response with Indian Navy identification."""

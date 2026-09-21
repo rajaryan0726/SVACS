@@ -62,6 +62,7 @@ CRITICAL RULES:
 5. If NO vessel is visible, return: {"vessel_detected": false, "description": "No vessel detected in image"}
 6. Be honest about confidence — use "low" when uncertain
 7. Return ONLY valid JSON — no markdown, no code blocks
+8. If the vessel is grey, has weapons, helipads, or military radar arrays, it MUST be classified as a Military Vessel. Do NOT classify grey warships as Passenger Ferries or Commercial Vessels, even if you cannot read a hull number.
 
 Known Indian Navy vessels (only confirm if visual evidence matches):
 - INS Vikrant (R11), INS Vikramaditya (R33) — Aircraft Carriers
@@ -70,6 +71,7 @@ Known Indian Navy vessels (only confirm if visual evidence matches):
 - INS Delhi (D61), INS Mysore (D60), INS Mumbai (D62) — Delhi-class destroyers
 - INS Shivalik (F47), INS Satpura (F48), INS Sahyadri (F49) — Shivalik-class frigates
 - INS Talwar (F40), INS Trishul (F43), INS Tabar (F44) — Talwar-class frigates
+- INS Brahmaputra (F36), INS Betwa (F39), INS Beas (F37) — Brahmaputra-class frigates
 - INS Nilgiri (F41) — Nilgiri-class (Project 17A) frigate
 - INS Kamorta (P28), INS Kadmatt (P29), INS Kiltan (P30), INS Kavaratti (P31) — Kamorta-class corvettes
 - INS Arihant (S2), INS Arighat (S3) — Arihant-class SSBNs
@@ -146,7 +148,15 @@ class GeminiVisionService:
 
             logger.info("Sending image to Gemini (%d KB)...", len(image_bytes) // 1024)
 
-            # Enforce strict timeout and fallback using ThreadPoolExecutor
+            # 1. FIRST check Local Proxy
+            if settings.LOCAL_GEMINI_API_KEY:
+                logger.info("Trying Local Gemini Proxy first...")
+                result = self._analyze_with_local_proxy(image_bytes, prompt)
+                if result:
+                    return result
+                logger.warning("Local proxy failed, falling back to Native Gemini API...")
+
+            # 2. SECOND check Native Gemini API
             response = None
             gemini_failed = False
             
@@ -195,7 +205,7 @@ class GeminiVisionService:
                 gemini_failed = True
                 
             if gemini_failed or not response or not response.text:
-                logger.warning("Gemini failed or returned empty. Executing OpenRouter Fallback...")
+                logger.warning("Gemini API failed or returned empty. Executing OpenRouter Fallback...")
                 return self._analyze_with_openrouter(image_bytes, prompt)
 
             raw_text = response.text.strip()
@@ -210,6 +220,7 @@ class GeminiVisionService:
                 raw_text = "\n".join(lines)
 
             result = json.loads(raw_text)
+            result["llm_provider"] = "Native Google GenAI SDK"
             logger.info(
                 "Gemini OK — detected=%s type=%s org=%s name=%s",
                 result.get("vessel_detected"), result.get("vessel_type"),
@@ -218,8 +229,8 @@ class GeminiVisionService:
             return result
 
         except json.JSONDecodeError as exc:
-            logger.error("Gemini returned invalid JSON: %s", exc)
-            return None
+            logger.warning("Gemini returned invalid JSON: %s. Executing OpenRouter Fallback...", exc)
+            return self._analyze_with_openrouter(image_bytes, prompt)
         except Exception as exc:
             logger.exception("Gemini vessel analysis failed: %s", exc)
             return None
@@ -235,10 +246,9 @@ class GeminiVisionService:
             return None
         
         fallback_models = [
+            "google/gemini-2.5-flash",
             "google/gemma-4-31b-it:free",
-            "google/gemma-4-26b-a4b-it:free",
-            "meta-llama/llama-3.2-11b-vision-instruct:free",
-            "openrouter/free"
+            "meta-llama/llama-3.2-11b-vision-instruct:free"
         ]
         
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -273,11 +283,12 @@ class GeminiVisionService:
                         ]
                     }
                 ],
-                "temperature": 0.1
+                "temperature": 0.1,
+                "max_tokens": 1024
             }
             
             try:
-                resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=20)
+                resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=10)
                 if resp.status_code != 200:
                     logger.warning("OpenRouter model %s failed: %s %s", model_name, resp.status_code, resp.text[:100])
                     continue
@@ -295,6 +306,7 @@ class GeminiVisionService:
                     raw_text = "\n".join(lines)
                 
                 result = json.loads(raw_text)
+                result["llm_provider"] = f"OpenRouter ({model_name})"
                 logger.info("OpenRouter Fallback OK (Model: %s) — detected=%s type=%s", model_name, result.get("vessel_detected"), result.get("vessel_type"))
                 return result
             except json.JSONDecodeError:
@@ -307,6 +319,78 @@ class GeminiVisionService:
         logger.error("All OpenRouter fallback models failed.")
         return None
 
+    def _analyze_with_local_proxy(self, image_bytes: bytes, prompt: str) -> Optional[dict]:
+        """Fallback to user's Local Gemini Proxy Server (e.g. gemini-web2api)."""
+        if not settings.LOCAL_GEMINI_API_KEY:
+            return None
+            
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        image_url = f"data:image/jpeg;base64,{base64_image}"
+        
+        headers = {
+            "Authorization": f"Bearer {settings.LOCAL_GEMINI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        model_name = "gemini-3.7-flash"
+        logger.info("Initiating Local Proxy fallback (Model: %s)...", model_name)
+        
+        payload = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_url
+                            }
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1024
+        }
+        
+        try:
+            resp = requests.post(settings.LOCAL_GEMINI_API_URL, headers=headers, json=payload, timeout=20)
+            if resp.status_code != 200:
+                logger.warning("Local Proxy %s failed: %s %s", model_name, resp.status_code, resp.text[:100])
+                return None
+                
+            data = resp.json()
+            raw_content = data["choices"][0]["message"]["content"]
+            if raw_content is None:
+                logger.warning("Local Proxy %s returned null content. Image upload might have failed on the proxy side.", model_name)
+                return None
+            
+            raw_text = raw_content.strip()
+            
+            # Clean markdown
+            if raw_text.startswith("```"):
+                lines = raw_text.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                raw_text = "\n".join(lines)
+            
+            result = json.loads(raw_text)
+            result["llm_provider"] = f"Local Proxy Server ({model_name})"
+            logger.info("Local Proxy Fallback OK (Model: %s) — detected=%s type=%s", model_name, result.get("vessel_detected"), result.get("vessel_type"))
+            return result
+        except json.JSONDecodeError:
+            logger.warning("Local Proxy %s returned invalid JSON.", model_name)
+            return None
+        except Exception as e:
+            logger.warning("Local Proxy %s request failed: %s", model_name, e)
+            return None
 
 # Module-level singleton
 gemini_vision_service = GeminiVisionService()

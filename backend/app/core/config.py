@@ -36,11 +36,15 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
     GEMINI_ENABLED: bool = str(os.getenv("GEMINI_ENABLED", "true")).lower() in ("1", "true", "yes")
-    GEMINI_TIMEOUT: int = int(os.getenv("GEMINI_TIMEOUT", "10"))
+    GEMINI_TIMEOUT: int = int(os.getenv("GEMINI_TIMEOUT", "45"))
 
     # ── OpenRouter API (Fallback) ─────────────────────────────
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash:free")
+
+    # ── Local Gemini Proxy API ────────────────────────────────
+    LOCAL_GEMINI_API_URL: str = os.getenv("LOCAL_GEMINI_API_URL", "http://127.0.0.1:8081/v1/chat/completions")
+    LOCAL_GEMINI_API_KEY: str = os.getenv("LOCAL_GEMINI_API_KEY", "sk-my-custom-key")
 
     # ── Device Configuration ──────────────────────────────────
     # auto | cuda | cpu

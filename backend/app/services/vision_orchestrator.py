@@ -220,6 +220,12 @@ class VisionOrchestrator:
         elif best_detection and best_detection.status == "UNKNOWN":
             validation_status = "FLAG"
 
+        dyn_classification_source = "YOLO + EfficientNet (AI unavailable)"
+        if best_detection and best_detection.llm_provider:
+             dyn_classification_source = f"{best_detection.llm_provider} + YOLO + EfficientNet"
+        elif gemini_vision_service.is_available:
+             dyn_classification_source = "Gemini Vision API + YOLO + EfficientNet"
+
         result = {
             "success": True,
             "trace_id": replay_id,
@@ -228,11 +234,7 @@ class VisionOrchestrator:
             "detections": [d.model_dump() for d in enhanced_detections],
             "ocr_results": [o.model_dump() for o in ocr_results],
             "explainable_image_base64": explainable_base64,
-            "classification_source": (
-                "Gemini Vision API + YOLO + EfficientNet"
-                if gemini_vision_service.is_available
-                else "YOLO + EfficientNet (Gemini unavailable)"
-            ),
+            "classification_source": dyn_classification_source,
             "model_version": "2.0.0",
             # Backward compatibility
             "validation_status": validation_status,
@@ -364,6 +366,7 @@ class VisionOrchestrator:
             label=classifier_label,
             confidence=classifier_confidence,
             top_predictions=top_predictions,
+            llm_provider=decision.get("llm_provider"),
         )
 
     # ------------------------------------------------------------------

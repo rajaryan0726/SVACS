@@ -165,6 +165,7 @@ class DecisionEngine:
             "nation": nation,
             "confidence_level": confidence_level,
             "gemini_used": True,
+            "llm_provider": gemini.get("llm_provider"),
             "classifier_label": classifier_label,
             "classifier_confidence": classifier_confidence,
             "detection_confidence": detection_confidence,

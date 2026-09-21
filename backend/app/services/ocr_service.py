@@ -129,9 +129,9 @@ class OCRService:
             logger.warning("OCR reader is None — skipping OCR stage.")
             return []
 
-        # Scale image down for OCR if larger than 1000px on longest side to save RAM and CPU time
+        # Scale image down for OCR if larger than 2500px on longest side to save RAM and CPU time, but preserve small hull numbers
         h, w = image.shape[:2]
-        max_dim = 1000
+        max_dim = 2500
         scale = 1.0
         ocr_input = image
         if max(h, w) > max_dim:
@@ -141,7 +141,7 @@ class OCRService:
             ocr_input = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
         try:
-            results = self.reader.readtext(ocr_input)
+            results = self.reader.readtext(ocr_input, mag_ratio=2.0, adjust_contrast=0.5)
         except Exception as exc:
             logger.exception("EasyOCR readtext() raised an exception: %s", exc)
             return []
